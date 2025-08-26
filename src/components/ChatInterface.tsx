@@ -49,11 +49,20 @@ const ChatInterface = () => {
   const [message, setMessage] = useState('');
   const [nickname, setNickname] = useState('');
   const [isMuted, setIsMuted] = useState(false);
-  const [showNicknameInput, setShowNicknameInput] = useState(true);
+  const [showNicknameInput, setShowNicknameInput] = useState(false);
 
   // Load channels on component mount
   useEffect(() => {
     loadChannels();
+    
+    // Get nickname from localStorage
+    const storedNickname = localStorage.getItem('chatNickname');
+    if (storedNickname) {
+      setNickname(storedNickname);
+      setShowNicknameInput(false);
+    } else {
+      setShowNicknameInput(true);
+    }
   }, []);
 
   // Load messages when selected channel changes
@@ -149,6 +158,9 @@ const ChatInterface = () => {
 
   const handleJoinWithNickname = async () => {
     if (!nickname.trim() || !selectedChannel) return;
+    
+    // Store nickname in localStorage
+    localStorage.setItem('chatNickname', nickname.trim());
     
     // Create user session
     await supabase

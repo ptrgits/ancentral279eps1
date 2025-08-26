@@ -3,13 +3,18 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MessageSquare, Users, Shield } from 'lucide-react';
 
-const WelcomeHero = () => {
+interface WelcomeHeroProps {
+  onJoinChat: () => void;
+}
+
+const WelcomeHero = ({ onJoinChat }: WelcomeHeroProps) => {
   const [nickname, setNickname] = useState('');
 
   const handleJoin = () => {
     if (nickname.trim().length >= 2) {
-      // This will be connected to Supabase later
-      console.log('Joining with nickname:', nickname);
+      // Store nickname in localStorage for ChatInterface to use
+      localStorage.setItem('chatNickname', nickname.trim());
+      onJoinChat();
     }
   };
 

@@ -19,7 +19,7 @@ const Index = () => {
   }
 
   if (currentView === 'welcome') {
-    return <WelcomeHero />;
+    return <WelcomeHero onJoinChat={handleJoinChat} />;
   }
 
   return <ChatInterface />;
