@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import { supabase } from '@/integrations/supabase/client';
 import { 
   Send, 
   Hash, 
@@ -15,40 +16,203 @@ import {
   MicOff
 } from 'lucide-react';
 
-// Mock data - will be replaced with Supabase
-const mockChannels = [
-  { id: '1', name: 'general', type: 'public', users: 12 },
-  { id: '2', name: 'operations', type: 'private', users: 5 },
-  { id: '3', name: 'intel-reports', type: 'public', users: 8 },
-  { id: '4', name: 'classified', type: 'private', users: 3 },
-];
+interface Channel {
+  id: string;
+  name: string;
+  type: 'public' | 'private';
+  created_at: string;
+  updated_at: string;
+}
 
-const mockMessages = [
-  { id: '1', user: 'Agent_Alpha', message: 'Channel secured. Beginning transmission.', time: '14:23', type: 'system' },
-  { id: '2', user: 'Agent_Bravo', message: 'Copy that. All units standing by.', time: '14:24', type: 'message' },
-  { id: '3', user: 'Agent_Charlie', message: 'Surveillance grid is active. No anomalies detected.', time: '14:25', type: 'message' },
-  { id: '4', user: 'Agent_Delta', message: 'Roger. Maintaining radio silence until further notice.', time: '14:26', type: 'message' },
-];
+interface Message {
+  id: string;
+  channel_id: string;
+  nickname: string;
+  content: string;
+  created_at: string;
+}
 
-const mockUsers = [
-  { id: '1', name: 'Agent_Alpha', status: 'online', typing: false },
-  { id: '2', name: 'Agent_Bravo', status: 'online', typing: true },
-  { id: '3', name: 'Agent_Charlie', status: 'away', typing: false },
-  { id: '4', name: 'Agent_Delta', status: 'online', typing: false },
-];
+interface UserSession {
+  id: string;
+  nickname: string;
+  channel_id: string;
+  is_online: boolean;
+  last_seen: string;
+  created_at: string;
+}
 
 const ChatInterface = () => {
-  const [selectedChannel, setSelectedChannel] = useState('general');
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [activeUsers, setActiveUsers] = useState<UserSession[]>([]);
   const [message, setMessage] = useState('');
+  const [nickname, setNickname] = useState('');
   const [isMuted, setIsMuted] = useState(false);
+  const [showNicknameInput, setShowNicknameInput] = useState(true);
 
-  const handleSendMessage = () => {
-    if (message.trim()) {
-      // Will integrate with Supabase
-      console.log('Sending message:', message);
+  // Load channels on component mount
+  useEffect(() => {
+    loadChannels();
+  }, []);
+
+  // Load messages when selected channel changes
+  useEffect(() => {
+    if (selectedChannel) {
+      loadMessages(selectedChannel.id);
+      loadActiveUsers(selectedChannel.id);
+    }
+  }, [selectedChannel]);
+
+  // Set up realtime subscriptions
+  useEffect(() => {
+    if (!selectedChannel) return;
+
+    const messagesChannel = supabase
+      .channel('messages-channel')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `channel_id=eq.${selectedChannel.id}`
+        },
+        (payload) => {
+          setMessages(prev => [...prev, payload.new as Message]);
+        }
+      )
+      .subscribe();
+
+    const usersChannel = supabase
+      .channel('users-channel')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'user_sessions',
+          filter: `channel_id=eq.${selectedChannel.id}`
+        },
+        () => {
+          loadActiveUsers(selectedChannel.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(messagesChannel);
+      supabase.removeChannel(usersChannel);
+    };
+  }, [selectedChannel]);
+
+  const loadChannels = async () => {
+    const { data, error } = await supabase
+      .from('channels')
+      .select('*')
+      .order('name');
+    
+    if (data && !error) {
+      const typedChannels = data as Channel[];
+      setChannels(typedChannels);
+      if (typedChannels.length > 0 && !selectedChannel) {
+        setSelectedChannel(typedChannels[0]);
+      }
+    }
+  };
+
+  const loadMessages = async (channelId: string) => {
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('channel_id', channelId)
+      .order('created_at')
+      .limit(50);
+    
+    if (data && !error) {
+      setMessages(data);
+    }
+  };
+
+  const loadActiveUsers = async (channelId: string) => {
+    const { data, error } = await supabase
+      .from('user_sessions')
+      .select('*')
+      .eq('channel_id', channelId)
+      .eq('is_online', true)
+      .order('nickname');
+    
+    if (data && !error) {
+      setActiveUsers(data);
+    }
+  };
+
+  const handleJoinWithNickname = async () => {
+    if (!nickname.trim() || !selectedChannel) return;
+    
+    // Create user session
+    await supabase
+      .from('user_sessions')
+      .insert({
+        nickname: nickname.trim(),
+        channel_id: selectedChannel.id
+      });
+    
+    setShowNicknameInput(false);
+  };
+
+  const handleSendMessage = async () => {
+    if (!message.trim() || !selectedChannel || !nickname) return;
+    
+    const { error } = await supabase
+      .from('messages')
+      .insert({
+        channel_id: selectedChannel.id,
+        nickname,
+        content: message.trim()
+      });
+    
+    if (!error) {
       setMessage('');
     }
   };
+
+  const formatTime = (timestamp: string) => {
+    return new Date(timestamp).toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  if (showNicknameInput) {
+    return (
+      <div className="min-h-screen bg-black text-text-primary flex items-center justify-center">
+        <div className="bg-surface border border-metallic/30 rounded-lg p-8 max-w-md w-full mx-4">
+          <h2 className="font-mono text-xl text-glow font-bold mb-6 text-center">
+            ENTER CODENAME
+          </h2>
+          <div className="space-y-4">
+            <Input
+              type="text"
+              placeholder="Agent codename..."
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleJoinWithNickname()}
+              className="bg-surface-elevated border-metallic/30 text-text-primary placeholder:text-text-muted font-mono"
+              maxLength={32}
+            />
+            <Button
+              onClick={handleJoinWithNickname}
+              disabled={!nickname.trim()}
+              className="w-full bg-gradient-to-r from-metallic to-metallic-bright text-black font-mono font-bold hover:scale-105 transition-all duration-300"
+            >
+              INITIATE CONNECTION
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-black text-text-primary flex">
@@ -63,12 +227,12 @@ const ChatInterface = () => {
         
         <ScrollArea className="flex-1 p-2">
           <div className="space-y-1">
-            {mockChannels.map((channel) => (
+            {channels.map((channel) => (
               <button
                 key={channel.id}
-                onClick={() => setSelectedChannel(channel.name)}
+                onClick={() => setSelectedChannel(channel)}
                 className={`w-full text-left p-3 rounded-lg transition-all duration-200 font-mono text-sm ${
-                  selectedChannel === channel.name
+                  selectedChannel?.id === channel.id
                     ? 'bg-metallic/20 text-glow border border-metallic/30'
                     : 'hover:bg-surface-elevated text-text-secondary'
                 }`}
@@ -82,7 +246,7 @@ const ChatInterface = () => {
                   <span>{channel.name}</span>
                 </div>
                 <div className="text-xs text-text-muted mt-1">
-                  {channel.users} agents
+                  {activeUsers.length} agents
                 </div>
               </button>
             ))}
@@ -111,7 +275,7 @@ const ChatInterface = () => {
               <Hash className="w-5 h-5 text-metallic" />
               <div>
                 <h3 className="font-mono text-lg text-glow font-bold">
-                  #{selectedChannel}
+                  #{selectedChannel?.name}
                 </h3>
                 <p className="text-xs text-text-muted">
                   Secure channel • End-to-end encrypted
@@ -138,23 +302,23 @@ const ChatInterface = () => {
         {/* Messages Area */}
         <ScrollArea className="flex-1 p-4">
           <div className="space-y-4">
-            {mockMessages.map((msg) => (
+            {messages.map((msg) => (
               <div key={msg.id} className="group animate-slide-up">
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 bg-gradient-to-br from-metallic to-metallic-bright rounded-lg flex items-center justify-center text-black font-mono font-bold text-xs">
-                    {msg.user.charAt(0)}
+                    {msg.nickname.charAt(0)}
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-mono text-sm text-metallic font-bold">
-                        {msg.user}
+                        {msg.nickname}
                       </span>
                       <span className="text-xs text-text-muted font-mono">
-                        {msg.time}
+                        {formatTime(msg.created_at)}
                       </span>
                     </div>
                     <p className="text-text-primary leading-relaxed">
-                      {msg.message}
+                      {msg.content}
                     </p>
                   </div>
                 </div>
@@ -168,7 +332,7 @@ const ChatInterface = () => {
           <div className="flex gap-3">
             <Input
               type="text"
-              placeholder={`Message #${selectedChannel}...`}
+              placeholder={`Message #${selectedChannel?.name}...`}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
@@ -198,25 +362,18 @@ const ChatInterface = () => {
         
         <ScrollArea className="flex-1 p-2">
           <div className="space-y-2">
-            {mockUsers.map((user) => (
+            {activeUsers.map((user) => (
               <div key={user.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-surface-elevated">
                 <div className="relative">
                   <div className="w-8 h-8 bg-gradient-to-br from-metallic to-metallic-bright rounded-lg flex items-center justify-center text-black font-mono font-bold text-xs">
-                    {user.name.charAt(0)}
+                    {user.nickname.charAt(0)}
                   </div>
-                  <div className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-surface ${
-                    user.status === 'online' ? 'bg-green-500' : 'bg-yellow-500'
-                  }`} />
+                  <div className="absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-surface bg-green-500" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="font-mono text-xs text-text-primary truncate">
-                    {user.name}
+                    {user.nickname}
                   </div>
-                  {user.typing && (
-                    <div className="text-xs text-metallic animate-pulse">
-                      typing...
-                    </div>
-                  )}
                 </div>
               </div>
             ))}
